@@ -10,7 +10,9 @@ const PORT = process.env.PORT || 3000;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const BAMBOO_BASE_URL = (process.env.BAMBOO_BASE_URL || 'https://bamboo.local.shifamily.com').replace(/\/+$/, '');
 const BAMBOO_TOKEN = process.env.BAMBOO_TOKEN;
-const MAP_FILE = process.env.REPO_PLAN_MAP || path.join(__dirname, 'config', 'repo-plan-map.json');
+const DEFAULT_MAP_FILE = path.join(__dirname, 'config', 'repo-plan-map.json');
+const EXAMPLE_MAP_FILE = path.join(__dirname, 'config', 'repo-plan-map.example.json');
+let MAP_FILE = process.env.REPO_PLAN_MAP || DEFAULT_MAP_FILE;
 const BAMBOO_TIMEOUT_MS = Number(process.env.BAMBOO_TIMEOUT_MS || 10000);
 const MAX_LOG_ENTRIES = Number(process.env.MAX_LOG_ENTRIES || 500);
 // Optional HTTP Basic Auth in front of the dashboard/API (not the webhook or healthz -
@@ -45,6 +47,16 @@ function loadVersionInfo() {
   return { hash: raw.trim() || 'dev', timestamp: null };
 }
 const VERSION = loadVersionInfo();
+
+// The real map is gitignored/dockerignored on purpose (it reveals internal Bamboo
+// project/plan keys) and is normally supplied at runtime via a bind mount. If nobody
+// explicitly pointed REPO_PLAN_MAP elsewhere and the default file just isn't there
+// (e.g. running the image standalone without the compose mount), fall back to the
+// bundled example rather than refusing to start.
+if (!process.env.REPO_PLAN_MAP && !fs.existsSync(MAP_FILE) && fs.existsSync(EXAMPLE_MAP_FILE)) {
+  console.warn(`No repo-plan map at ${MAP_FILE}; falling back to the bundled example (${EXAMPLE_MAP_FILE}). Mount a real config/repo-plan-map.json for actual use - see README.`);
+  MAP_FILE = EXAMPLE_MAP_FILE;
+}
 
 function loadMap() {
   const raw = fs.readFileSync(MAP_FILE, 'utf8');

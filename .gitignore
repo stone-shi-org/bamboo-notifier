@@ -2,3 +2,8 @@ node_modules/
 .env
 *.log
 version.txt
+
+# Real repo->Bamboo-plan mapping - reveals internal Bamboo project/plan keys and which
+# repos are wired to build. Keep config/repo-plan-map.example.json (tracked) as the
+# format reference; the real file lives here only, gitignored.
+config/repo-plan-map.json

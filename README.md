@@ -27,6 +27,13 @@ Flow: `git push` → GitHub org webhook → `POST /webhook/github` → look up r
 
 ## Repo → plan mapping (`config/repo-plan-map.json`)
 
+**This file is gitignored, on purpose.** It lists which internal Bamboo projects/plans
+exist and which repos they build — that's internal infrastructure detail, not something
+to publish in a public GitHub repo. `config/repo-plan-map.example.json` is the tracked
+format reference; copy it to `config/repo-plan-map.json` and fill in real values (the
+`.dockerignore` also excludes the real file, so it's never baked into the image either —
+it's only ever delivered at runtime via the `docker-compose.yml` bind mount).
+
 ```json
 {
   "myorg/example-service": [

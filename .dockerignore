@@ -3,3 +3,8 @@ npm-debug.log
 .env
 .git
 .gitignore
+
+# Real config - never bake this into the image; it's only ever delivered at
+# runtime via the docker-compose bind mount. The image ships the example as a
+# harmless fallback if run without the mount.
+config/repo-plan-map.json
