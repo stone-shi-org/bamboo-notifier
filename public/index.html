@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bamboo-notifier</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #12151a;
+    --panel: #1a1e26;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --dim: #8b93a1;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--dim); font-size: 12px; }
+  main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 10px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 18px;
+    min-width: 130px;
+  }
+  .card .num { font-size: 26px; font-weight: 600; }
+  .card .label { color: var(--dim); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  tr:last-child td { border-bottom: none; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: rgba(63,185,80,0.15); color: var(--ok); }
+  .badge.warn { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .badge.err { background: rgba(248,81,73,0.15); color: var(--err); }
+  .badge.dim { background: rgba(139,148,161,0.15); color: var(--dim); }
+  .empty { color: var(--dim); font-style: italic; padding: 12px; }
+  .plans { display: flex; flex-direction: column; gap: 3px; }
+  #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  #dot.stale { background: var(--err); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#127807; bamboo-notifier</h1>
+  <span class="meta"><span id="dot"></span> <span id="conn">live</span></span>
+  <span class="meta" id="version"></span>
+  <span class="meta" id="uptime"></span>
+</header>
+<main>
+  <section>
+    <h2>Statistics</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section>
+    <h2>Configuration</h2>
+    <table>
+      <tbody id="config-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Repo &rarr; Plan mapping</h2>
+    <table>
+      <thead><tr><th>Repo</th><th>Plan key</th><th>Branch filter</th><th>Pushes seen</th></tr></thead>
+      <tbody id="mapping-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recent activity <span class="meta" id="log-count"></span></h2>
+    <table>
+      <thead><tr><th>Time</th><th>Repo</th><th>Ref</th><th>Event</th><th>Outcome</th><th>Plans</th><th>Delivery</th></tr></thead>
+      <tbody id="log-body"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const OUTCOME_BADGE = {
+  received: 'dim', dispatched: 'dim', done: 'ok', ping: 'dim',
+  ignored_event: 'dim', ignored_no_repo: 'dim', ignored_no_mapping: 'dim', ignored_deleted: 'dim',
+  rejected_signature: 'err',
+};
+const PLAN_BADGE = {
+  pending: 'dim', triggered: 'ok', failed: 'err', error: 'err', skipped_branch: 'warn',
+};
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function badge(cls, text) { return `<span class="badge ${cls}">${esc(text)}</span>`; }
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { hour12: false });
+}
+function fmtUptime(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+function render(data) {
+  document.getElementById('version').textContent =
+    `version ${data.version.hash}${data.version.timestamp ? ' (' + data.version.timestamp + ')' : ''}`;
+  document.getElementById('uptime').textContent =
+    `up ${fmtUptime(data.uptimeSeconds)} - started ${fmtTime(data.startedAt)}`;
+
+  const cards = [
+    ['Deliveries received', data.stats.received],
+    ['Builds triggered', data.stats.triggered],
+    ['Trigger failures', data.stats.triggerFailed],
+    ['Signature rejects', data.stats.rejectedSignature],
+    ['Repos mapped', Object.keys(data.repoPlanMap).length],
+  ];
+  document.getElementById('cards').innerHTML = cards.map(([label, num]) =>
+    `<div class="card"><div class="num">${esc(num)}</div><div class="label">${esc(label)}</div></div>`
+  ).join('');
+
+  const cfgRows = [
+    ['Bamboo base URL', `<code>${esc(data.bambooBaseUrl)}</code>`],
+    ['Plan map file', `<code>${esc(data.mapFile)}</code>`],
+    ['Listening on', `<code>:${esc(data.port)}</code>`],
+    ['By event type', Object.entries(data.stats.byEvent).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(', ') || '&mdash;'],
+  ];
+  document.getElementById('config-body').innerHTML = cfgRows.map(([k, v]) =>
+    `<tr><th style="width:220px">${esc(k)}</th><td>${v}</td></tr>`
+  ).join('');
+
+  const mappingRows = [];
+  for (const [repo, rules] of Object.entries(data.repoPlanMap)) {
+    for (const rule of rules) {
+      const planKey = typeof rule === 'string' ? rule : rule.planKey;
+      const branches = typeof rule === 'string' ? null : rule.branches;
+      mappingRows.push(`<tr>
+        <td>${esc(repo)}</td>
+        <td><code>${esc(planKey)}</code></td>
+        <td>${branches && branches.length ? esc(branches.join(', ')) : '<span class="meta">any branch</span>'}</td>
+        <td>${esc(data.stats.pushByRepo[repo] ?? 0)}</td>
+      </tr>`);
+    }
+  }
+  document.getElementById('mapping-body').innerHTML = mappingRows.length
+    ? mappingRows.join('')
+    : `<tr><td colspan="4" class="empty">No repos configured</td></tr>`;
+
+  document.getElementById('log-count').textContent = `(${data.log.length} shown, newest first)`;
+  document.getElementById('log-body').innerHTML = data.log.length ? data.log.map(entry => {
+    const plansHtml = entry.plans && entry.plans.length
+      ? `<div class="plans">${entry.plans.map(p =>
+          `${badge(PLAN_BADGE[p.status] || 'dim', p.planKey)} <span class="meta">${esc(p.detail ?? '')}</span>`
+        ).join('<br>')}</div>`
+      : '<span class="meta">&mdash;</span>';
+    return `<tr>
+      <td>${esc(fmtTime(entry.ts))}</td>
+      <td>${esc(entry.repo ?? '—')}</td>
+      <td>${esc(entry.ref ?? '—')}</td>
+      <td>${esc(entry.event ?? '—')}</td>
+      <td>${badge(OUTCOME_BADGE[entry.outcome] || 'dim', entry.outcome)}</td>
+      <td>${plansHtml}</td>
+      <td><span class="meta">${esc(entry.delivery ?? '')}</span></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty">No deliveries yet</td></tr>`;
+}
+
+async function tick() {
+  try {
+    const res = await fetch('/api/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+    document.getElementById('dot').classList.remove('stale');
+    document.getElementById('conn').textContent = 'live';
+  } catch (err) {
+    document.getElementById('dot').classList.add('stale');
+    document.getElementById('conn').textContent = 'disconnected: ' + err.message;
+  }
+}
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "myorg/example-service": [
+    { "planKey": "EX-EX", "branches": ["main"] }
+  ],
+  "myorg/another-repo": [
+    "AN-BUILD"
+  ]
+}
