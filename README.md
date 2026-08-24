@@ -104,6 +104,15 @@ for a `200`/`pong` response, and `docker compose logs` on this side.
 
 ## Testing
 
+Run the unit tests with:
+
+```bash
+npm test
+```
+
+This uses Node's built-in test runner and writes a JUnit-style report to
+`test-reports/junit.xml` (the report directory is gitignored).
+
 1. Bamboo reachability/token sanity check (uses `BAMBOO_TOKEN` from `~/.secrets/bamboo.env`):
    ```bash
    source ~/.secrets/bamboo.env

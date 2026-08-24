@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
@@ -314,6 +315,10 @@ app.get('/api/status', (_req, res) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => {
-  console.log(`bamboo-notifier listening on :${PORT}, bamboo=${BAMBOO_BASE_URL}, repos configured=${Object.keys(repoPlanMap).length}, version=${VERSION.hash}`);
-});
+export { app, branchFromRef, verifySignature };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  app.listen(PORT, () => {
+    console.log(`bamboo-notifier listening on :${PORT}, bamboo=${BAMBOO_BASE_URL}, repos configured=${Object.keys(repoPlanMap).length}, version=${VERSION.hash}`);
+  });
+}

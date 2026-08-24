@@ -6,7 +6,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "mkdir -p test-reports && node --test --test-reporter=junit --test-reporter-destination=test-reports/junit.xml test/*.test.js"
   },
   "engines": {
     "node": ">=20"
