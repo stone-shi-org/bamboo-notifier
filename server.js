@@ -88,10 +88,29 @@ try {
   console.warn('fs.watch on the map file failed to start; edits to it will require a container restart.');
 }
 
-// ---- in-memory stats + recent-activity log, for the dashboard / debugging ----
-// Deliberately not persisted anywhere: this is a debugging aid, not an audit trail.
-// It resets on restart/redeploy, and only keeps the last MAX_LOG_ENTRIES deliveries.
-const stats = {
+// ---- Persistent stats + recent-activity log, for the dashboard / debugging ----
+const DEFAULT_DATA_DIR = path.join(__dirname, 'data');
+const STATE_FILE = process.env.STATE_FILE || path.join(DEFAULT_DATA_DIR, 'state.json');
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const raw = fs.readFileSync(STATE_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return {
+        stats: data.stats && typeof data.stats === 'object' ? data.stats : null,
+        activityLog: Array.isArray(data.activityLog) ? data.activityLog : [],
+      };
+    }
+  } catch (err) {
+    console.warn(`Failed to load state from ${STATE_FILE}: ${err.message}`);
+  }
+  return { stats: null, activityLog: [] };
+}
+
+const loadedState = loadState();
+
+const stats = loadedState.stats || {
   startedAt: new Date().toISOString(),
   received: 0,
   byEvent: {},
@@ -100,13 +119,39 @@ const stats = {
   triggered: 0,
   triggerFailed: 0,
 };
-const activityLog = [];
+const activityLog = loadedState.activityLog;
+
+function saveStateSync() {
+  try {
+    const dir = path.dirname(STATE_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const tmpFile = `${STATE_FILE}.tmp`;
+    const content = JSON.stringify({ stats, activityLog }, null, 2);
+    fs.writeFileSync(tmpFile, content, 'utf8');
+    fs.renameSync(tmpFile, STATE_FILE);
+  } catch (err) {
+    console.warn(`Failed to save state to ${STATE_FILE}: ${err.message}`);
+  }
+}
+
+let saveTimer = null;
+function saveState() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveStateSync();
+  }, 50);
+}
 
 function recordEvent(entry) {
   activityLog.push(entry);
   if (activityLog.length > MAX_LOG_ENTRIES) activityLog.shift();
+  saveState();
   return entry;
 }
+
 
 const app = express();
 app.disable('x-powered-by');
@@ -194,6 +239,7 @@ async function triggerBambooPlan(planKey, meta, planEntry) {
     console.error(`[bamboo] trigger ERROR plan=${planKey} repo=${meta.repo} ref=${meta.ref}: ${err.message}`);
   } finally {
     clearTimeout(timer);
+    saveState();
   }
 }
 
@@ -283,9 +329,14 @@ app.post('/webhook/github', (req, res) => {
 
   if (entry.plans.length === 0) {
     entry.outcome = 'ignored_no_mapping';
+    saveState();
   } else {
     entry.outcome = 'dispatched';
-    Promise.all(pending).then(() => { entry.outcome = 'done'; });
+    saveState();
+    Promise.all(pending).then(() => {
+      entry.outcome = 'done';
+      saveState();
+    });
   }
 });
 
@@ -315,7 +366,8 @@ app.get('/api/status', (_req, res) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-export { app, branchFromRef, verifySignature };
+export { app, branchFromRef, verifySignature, saveStateSync, STATE_FILE };
+
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   app.listen(PORT, () => {

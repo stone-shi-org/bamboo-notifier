@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -11,7 +12,8 @@ process.env.BAMBOO_BASE_URL = 'https://bamboo.test';
 process.env.REPO_PLAN_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config', 'repo-plan-map.example.json');
 process.env.BAMBOO_TIMEOUT_MS = '1000';
 
-const { app, branchFromRef, verifySignature } = await import('../server.js');
+const { app, branchFromRef, verifySignature, saveStateSync, STATE_FILE } = await import('../server.js');
+
 
 let server;
 let bambooResponse = { status: 200, body: { buildResultKey: 'EX-123' } };
@@ -216,3 +218,12 @@ test('records a failed Bamboo response', async () => {
   assert.equal(data.log[0].plans[0].detail, 'HTTP 503: Bamboo unavailable');
   assert.equal(data.stats.triggerFailed, 1);
 });
+
+test('persists stats and activity log to disk', async () => {
+  saveStateSync();
+  assert.equal(fs.existsSync(STATE_FILE), true);
+  const content = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  assert.ok(content.stats);
+  assert.ok(Array.isArray(content.activityLog));
+});
+

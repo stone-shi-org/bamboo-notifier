@@ -8,3 +8,5 @@ npm-debug.log
 # runtime via the docker-compose bind mount. The image ships the example as a
 # harmless fallback if run without the mount.
 config/repo-plan-map.json
+data
+

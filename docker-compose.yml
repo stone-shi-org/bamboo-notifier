@@ -19,6 +19,8 @@ services:
       # Mount read-only so plan-mapping edits on the host are picked up live (fs.watch),
       # without giving the container write access to it.
       - ./config/repo-plan-map.json:/app/config/repo-plan-map.json:ro
+      # Persist stats and activity log across container restarts.
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
