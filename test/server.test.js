@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -11,6 +12,10 @@ process.env.BAMBOO_TOKEN = 'test-bamboo-token';
 process.env.BAMBOO_BASE_URL = 'https://bamboo.test';
 process.env.REPO_PLAN_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config', 'repo-plan-map.example.json');
 process.env.BAMBOO_TIMEOUT_MS = '1000';
+// Use a throwaway state file so this run's stats/activityLog never leak into (or get
+// polluted by) the real data/state.json - that file persists across CI runs on the
+// Bamboo agent's build directory since data/ is gitignored and never cleaned between builds.
+process.env.STATE_FILE = path.join(os.tmpdir(), `bamboo-notifier-test-state-${process.pid}.json`);
 
 const { app, branchFromRef, verifySignature, saveStateSync, STATE_FILE } = await import('../server.js');
 
@@ -39,6 +44,8 @@ before(async () => {
 after(async () => {
   globalThis.fetch = originalFetch;
   await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  fs.rmSync(STATE_FILE, { force: true });
+  fs.rmSync(`${STATE_FILE}.tmp`, { force: true });
 });
 
 function request(method, requestPath, { body, headers = {} } = {}) {
