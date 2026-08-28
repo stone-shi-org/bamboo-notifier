@@ -9,6 +9,9 @@ version.txt
 # format reference; the real file lives here only, gitignored.
 config/repo-plan-map.json
 
-# Persistent runtime state (stats & activity log)
+# Persistent runtime state (SQLite history/stats db, incl. WAL/SHM sidecar files)
 data/
+*.db
+*.db-wal
+*.db-shm
 

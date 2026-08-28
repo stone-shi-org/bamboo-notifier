@@ -12,12 +12,12 @@ process.env.BAMBOO_TOKEN = 'test-bamboo-token';
 process.env.BAMBOO_BASE_URL = 'https://bamboo.test';
 process.env.REPO_PLAN_MAP = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'config', 'repo-plan-map.example.json');
 process.env.BAMBOO_TIMEOUT_MS = '1000';
-// Use a throwaway state file so this run's stats/activityLog never leak into (or get
-// polluted by) the real data/state.json - that file persists across CI runs on the
-// Bamboo agent's build directory since data/ is gitignored and never cleaned between builds.
-process.env.STATE_FILE = path.join(os.tmpdir(), `bamboo-notifier-test-state-${process.pid}.json`);
+// Use a throwaway db file so this run's history/stats never leak into (or get polluted
+// by) the real data/bamboo-notifier.db - that file persists across CI runs on the Bamboo
+// agent's build directory since data/ is gitignored and never cleaned between builds.
+process.env.DB_FILE = path.join(os.tmpdir(), `bamboo-notifier-test-${process.pid}.db`);
 
-const { app, branchFromRef, verifySignature, saveStateSync, STATE_FILE } = await import('../server.js');
+const { app, branchFromRef, verifySignature, store, DB_FILE } = await import('../server.js');
 
 
 let server;
@@ -44,8 +44,10 @@ before(async () => {
 after(async () => {
   globalThis.fetch = originalFetch;
   await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
-  fs.rmSync(STATE_FILE, { force: true });
-  fs.rmSync(`${STATE_FILE}.tmp`, { force: true });
+  store.close();
+  for (const suffix of ['', '-wal', '-shm']) {
+    fs.rmSync(`${DB_FILE}${suffix}`, { force: true });
+  }
 });
 
 function request(method, requestPath, { body, headers = {} } = {}) {
@@ -226,11 +228,14 @@ test('records a failed Bamboo response', async () => {
   assert.equal(data.stats.triggerFailed, 1);
 });
 
-test('persists stats and activity log to disk', async () => {
-  saveStateSync();
-  assert.equal(fs.existsSync(STATE_FILE), true);
-  const content = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  assert.ok(content.stats);
-  assert.ok(Array.isArray(content.activityLog));
+test('persists history and stats to the SQLite database on disk', async () => {
+  // Every recordDelivery/updatePlanTrigger call in server.js is a synchronous SQLite
+  // write, so by the time earlier tests' waitFor() resolved, it was already durable -
+  // no explicit flush needed here.
+  assert.equal(fs.existsSync(DB_FILE), true);
+  const stats = store.getStats();
+  assert.ok(stats.received > 0);
+  assert.ok(Array.isArray(store.getRecentActivity(10)));
+  assert.ok(Array.isArray(store.getDailyStats(14)));
 });
 

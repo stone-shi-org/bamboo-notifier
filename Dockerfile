@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
-COPY server.js ./
+COPY server.js db.js ./
 COPY config ./config
 COPY public ./public
 COPY version.txt* ./
@@ -15,4 +15,4 @@ EXPOSE 3000
 
 USER node
 
-CMD ["node", "server.js"]
+CMD ["node", "--disable-warning=ExperimentalWarning", "server.js"]

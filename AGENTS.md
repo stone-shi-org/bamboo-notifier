@@ -6,12 +6,13 @@ This repository contains **bamboo-notifier**, a Node.js service that acts as a G
 
 ## 1. Environment & Architecture
 
-- **Runtime:** Node.js (>= v20)
+- **Runtime:** Node.js (>= v22.5, for the built-in `node:sqlite` module)
 - **Module System:** ES Modules (`"type": "module"` in `package.json`, use `import`/`export` and `node:` protocol imports)
 - **Framework:** Express (`express` v4)
 - **Testing:** Node's built-in test runner (`node --test`)
 - **Key Files:**
   - `server.js`: Main Express HTTP server, HMAC signature verification, status API, dashboard, and async Bamboo REST API triggering logic.
+  - `db.js`: SQLite (`node:sqlite`) persistence for delivery/build-trigger history and stats. Default DB path `data/bamboo-notifier.db` (override with `DB_FILE`); bind-mounted to `/app/data` in `docker-compose.yml` so it survives restarts.
   - `config/repo-plan-map.json`: Runtime mapping from GitHub repo full names (`org/repo`) to Bamboo project/plan keys. (Gitignored; template provided at `config/repo-plan-map.example.json`).
   - `test/`: Node test runner test suites.
   - `build.sh` & `Dockerfile`: Container image build script.
@@ -45,7 +46,8 @@ npm test
 ## 3. Coding Guidelines & Constraints
 
 1. **Native Node.js Features:**
-   - Prefer Node's native standard library modules over third-party dependencies (`node:crypto`, `node:fs`, `node:path`, global `fetch`).
+   - Prefer Node's native standard library modules over third-party dependencies (`node:crypto`, `node:fs`, `node:path`, `node:sqlite`, global `fetch`).
+   - `node:sqlite` requires Node >= 22.5 and is still flagged experimental upstream; it's run with `--disable-warning=ExperimentalWarning` (see `package.json` scripts and `Dockerfile` CMD) to keep logs clean. If Node's SQLite API changes in a breaking way on a future upgrade, `db.js` is the only file that touches it.
 2. **Asynchronous Webhook Response Pattern:**
    - Webhook requests (`/webhook/github`) MUST respond immediately with HTTP 200 after validating HMAC signature and enqueueing triggers. Bamboo REST API calls run asynchronously in the background so slow upstream responses do not cause GitHub webhook timeouts.
 3. **Security & Secrets:**

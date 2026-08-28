@@ -9,4 +9,7 @@ npm-debug.log
 # harmless fallback if run without the mount.
 config/repo-plan-map.json
 data
+*.db
+*.db-wal
+*.db-shm
 

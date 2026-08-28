@@ -94,6 +94,14 @@
   </section>
 
   <section>
+    <h2>History (last 14 days)</h2>
+    <table>
+      <thead><tr><th>Day</th><th>Received</th><th>Sig. rejected</th><th>Triggered</th><th>Trigger failed</th></tr></thead>
+      <tbody id="daily-body"></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Recent activity <span class="meta" id="log-count"></span></h2>
     <table>
       <thead><tr><th>Time</th><th>Repo</th><th>Ref</th><th>Event</th><th>Outcome</th><th>Plans</th><th>Delivery</th></tr></thead>
@@ -169,6 +177,17 @@ function render(data) {
   document.getElementById('mapping-body').innerHTML = mappingRows.length
     ? mappingRows.join('')
     : `<tr><td colspan="4" class="empty">No repos configured</td></tr>`;
+
+  const dailyRows = (data.dailyStats || []);
+  document.getElementById('daily-body').innerHTML = dailyRows.length
+    ? dailyRows.map((d) => `<tr>
+        <td>${esc(d.day)}</td>
+        <td>${esc(d.received)}</td>
+        <td>${esc(d.rejectedSignature)}</td>
+        <td>${esc(d.triggered)}</td>
+        <td>${esc(d.triggerFailed)}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="5" class="empty">No history yet</td></tr>`;
 
   document.getElementById('log-count').textContent = `(${data.log.length} shown, newest first)`;
   document.getElementById('log-body').innerHTML = data.log.length ? data.log.map(entry => {

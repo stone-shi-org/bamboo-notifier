@@ -22,8 +22,8 @@ Flow: `git push` → GitHub org webhook → `POST /webhook/github` → look up r
 - The map file is re-read live (`fs.watch`) — edit it without restarting the container
   (falls back to requiring a restart if the mount doesn't support `fs.watch`, e.g. some
   bind-mount setups).
-- Keeps an in-memory status/activity log (see **Dashboard** below) for debugging —
-  it's not persisted and resets on restart; it's a debugging aid, not an audit trail.
+- Records every delivery and per-plan build trigger to a local SQLite database (see
+  **History & stats database** below) that survives restarts/rebuilds.
 
 ## Repo → plan mapping (`config/repo-plan-map.json`)
 
@@ -64,10 +64,44 @@ it's only ever delivered at runtime via the `docker-compose.yml` bind mount).
 | `PORT` | no | `3000` | |
 | `REPO_PLAN_MAP` | no | `config/repo-plan-map.json` | Path override |
 | `BAMBOO_TIMEOUT_MS` | no | `10000` | Abort a stuck Bamboo call after this long |
-| `MAX_LOG_ENTRIES` | no | `500` | How many recent deliveries the dashboard keeps in memory |
+| `DB_FILE` | no | `data/bamboo-notifier.db` | SQLite database path — see **History & stats database** |
+| `HISTORY_RETENTION_DAYS` | no | `0` (keep forever) | If set > 0, prune delivery/trigger rows older than this many days once a day |
+| `MAX_LOG_ENTRIES` | no | `500` | How many recent deliveries the dashboard/`/api/status` show at once (full history stays in the database regardless) |
 | `STATUS_USER` / `STATUS_PASSWORD` | no | unset | HTTP Basic Auth for the dashboard/`/api/status`. Both or neither — see **Dashboard** |
 
 Copy `.env.example` to `.env` and fill in real values (`.env` is gitignored).
+
+## History & stats database
+
+Every webhook delivery and every per-plan Bamboo trigger attempt is written to a local
+SQLite database (Node's built-in `node:sqlite` — no native dependency to build/ship) at
+`data/bamboo-notifier.db` by default (override with `DB_FILE`). Two tables:
+
+- `deliveries` — one row per webhook delivery: timestamp, GitHub delivery ID, event type,
+  repo, ref, and outcome (`received`/`dispatched`/`done`/`ignored_*`/`rejected_signature`).
+- `plan_triggers` — one row per plan a delivery fanned out to: plan key, status
+  (`triggered`/`failed`/`error`/`skipped_branch`), and detail (Bamboo `buildResultKey` or
+  the error).
+
+Writes are synchronous, so nothing is buffered in memory waiting to be flushed — by the
+time a request returns, its row is already durable. `/api/status` (and the dashboard)
+reads recent history and stats straight out of the database:
+
+- `stats` — cumulative counters (`received`, `byEvent`, `pushByRepo`, `rejectedSignature`,
+  `triggered`, `triggerFailed`), computed over the **entire** history, not just what's
+  currently loaded.
+- `log` — the most recent `MAX_LOG_ENTRIES` deliveries with their plan outcomes attached
+  (newest first). The database keeps everything regardless of this cap.
+- `dailyStats` — a per-day breakdown (received/rejected/triggered/failed) for the last 14
+  days, shown as a table on the dashboard.
+
+History is kept forever by default. Set `HISTORY_RETENTION_DAYS` to a positive number to
+prune rows older than that once a day (e.g. `HISTORY_RETENTION_DAYS=180`).
+
+In Docker, `data/` is bind-mounted (see `docker-compose.yml`) so the database survives
+container rebuilds/restarts. **Run `mkdir -p data` once before the first `docker compose
+up`** — otherwise Docker creates that directory owned by `root`, which the container's
+non-root `node` user can't write to.
 
 ## Run it
 
@@ -76,6 +110,7 @@ Copy `.env.example` to `.env` and fill in real values (`.env` is gitignored).
 ```bash
 cp .env.example .env    # fill in WEBHOOK_SECRET and BAMBOO_TOKEN
 # edit config/repo-plan-map.json for your repos/plans
+mkdir -p data            # so the SQLite db is writable by the container's non-root user
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -143,20 +178,19 @@ This uses Node's built-in test runner and writes a JUnit-style report to
 also useful directly with `curl` for scripting/debugging):
 
 - **Statistics** — deliveries received, builds triggered, trigger failures, signature
-  rejections, event-type breakdown.
+  rejections, event-type breakdown. Computed from the full SQLite history, not just what's
+  currently displayed.
 - **Configuration** — Bamboo base URL, map file path, listen port.
 - **Repo → plan mapping** — the live contents of `config/repo-plan-map.json`, plus a
   push count per repo.
-- **Recent activity** — every delivery since the process started (newest first, capped
-  at `MAX_LOG_ENTRIES`), with timestamp, repo, ref, event, outcome
-  (`dispatched`/`done`/`ignored_no_mapping`/`rejected_signature`/...), per-plan trigger
-  status (`triggered` with the Bamboo `buildResultKey`, `failed`/`error` with the
-  reason, or `skipped_branch`), and the GitHub delivery ID (handy for cross-referencing
-  with the webhook's own "Recent Deliveries" tab when debugging).
-
-This resets on restart and is not written to disk — it's a debugging aid, not an audit
-trail. If you need history across restarts, use `docker compose logs`, which has the
-same information as plain text lines.
+- **History (last 14 days)** — a per-day breakdown of received/rejected/triggered/failed
+  counts (`dailyStats` in `/api/status`); see **History & stats database** above.
+- **Recent activity** — the most recent deliveries (newest first, capped at
+  `MAX_LOG_ENTRIES` — the database itself keeps everything), with timestamp, repo, ref,
+  event, outcome (`dispatched`/`done`/`ignored_no_mapping`/`rejected_signature`/...),
+  per-plan trigger status (`triggered` with the Bamboo `buildResultKey`, `failed`/`error`
+  with the reason, or `skipped_branch`), and the GitHub delivery ID (handy for
+  cross-referencing with the webhook's own "Recent Deliveries" tab when debugging).
 
 **Auth:** the dashboard and `/api/status` are open by default (`/webhook/github` and
 `/healthz` are never gated, since GitHub and container healthchecks can't do a login

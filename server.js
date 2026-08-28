@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createStore } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,70 +89,22 @@ try {
   console.warn('fs.watch on the map file failed to start; edits to it will require a container restart.');
 }
 
-// ---- Persistent stats + recent-activity log, for the dashboard / debugging ----
+// ---- Persistent history + stats (SQLite), for the dashboard / debugging ----
+// Every delivery and per-plan trigger outcome is written straight to a local SQLite
+// database (node:sqlite, synchronous - each call below is already durable when it
+// returns, no debounce/flush dance needed). Defaults under ./data so it lines up with
+// the docker-compose bind mount (./data:/app/data) - see README.
 const DEFAULT_DATA_DIR = path.join(__dirname, 'data');
-const STATE_FILE = process.env.STATE_FILE || path.join(DEFAULT_DATA_DIR, 'state.json');
+const DB_FILE = process.env.DB_FILE || path.join(DEFAULT_DATA_DIR, 'bamboo-notifier.db');
+const HISTORY_RETENTION_DAYS = Number(process.env.HISTORY_RETENTION_DAYS || 0);
 
-function loadState() {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const raw = fs.readFileSync(STATE_FILE, 'utf8');
-      const data = JSON.parse(raw);
-      return {
-        stats: data.stats && typeof data.stats === 'object' ? data.stats : null,
-        activityLog: Array.isArray(data.activityLog) ? data.activityLog : [],
-      };
-    }
-  } catch (err) {
-    console.warn(`Failed to load state from ${STATE_FILE}: ${err.message}`);
-  }
-  return { stats: null, activityLog: [] };
+const store = createStore(DB_FILE, { retentionDays: HISTORY_RETENTION_DAYS });
+const STARTED_AT = store.getOrSetStartedAt();
+
+if (HISTORY_RETENTION_DAYS > 0) {
+  store.pruneOldRows();
+  setInterval(() => store.pruneOldRows(), 24 * 60 * 60 * 1000).unref();
 }
-
-const loadedState = loadState();
-
-const stats = loadedState.stats || {
-  startedAt: new Date().toISOString(),
-  received: 0,
-  byEvent: {},
-  pushByRepo: {},
-  rejectedSignature: 0,
-  triggered: 0,
-  triggerFailed: 0,
-};
-const activityLog = loadedState.activityLog;
-
-function saveStateSync() {
-  try {
-    const dir = path.dirname(STATE_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const tmpFile = `${STATE_FILE}.tmp`;
-    const content = JSON.stringify({ stats, activityLog }, null, 2);
-    fs.writeFileSync(tmpFile, content, 'utf8');
-    fs.renameSync(tmpFile, STATE_FILE);
-  } catch (err) {
-    console.warn(`Failed to save state to ${STATE_FILE}: ${err.message}`);
-  }
-}
-
-let saveTimer = null;
-function saveState() {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    saveStateSync();
-  }, 50);
-}
-
-function recordEvent(entry) {
-  activityLog.push(entry);
-  if (activityLog.length > MAX_LOG_ENTRIES) activityLog.shift();
-  saveState();
-  return entry;
-}
-
 
 const app = express();
 app.disable('x-powered-by');
@@ -203,9 +156,9 @@ function branchFromRef(ref) {
   return ref && ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
 }
 
-// Mutates planEntry in place (status/detail) so the activityLog entry it belongs to
-// reflects the outcome as soon as it's known, even though the HTTP response already went out.
-async function triggerBambooPlan(planKey, meta, planEntry) {
+// Updates the plan_triggers row for this plan as soon as the outcome is known, even
+// though the HTTP response to GitHub already went out.
+async function triggerBambooPlan(planKey, meta, triggerId) {
   const url = `${BAMBOO_BASE_URL}/rest/api/latest/queue/${encodeURIComponent(planKey)}.json`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BAMBOO_TIMEOUT_MS);
@@ -220,26 +173,19 @@ async function triggerBambooPlan(planKey, meta, planEntry) {
     });
     const bodyText = await res.text().catch(() => '');
     if (!res.ok) {
-      stats.triggerFailed++;
-      planEntry.status = 'failed';
-      planEntry.detail = `HTTP ${res.status}: ${bodyText.slice(0, 300)}`;
+      store.updatePlanTrigger(triggerId, 'failed', `HTTP ${res.status}: ${bodyText.slice(0, 300)}`);
       console.error(`[bamboo] trigger FAILED plan=${planKey} repo=${meta.repo} ref=${meta.ref} status=${res.status} body=${bodyText.slice(0, 500)}`);
       return;
     }
     let resultKey;
     try { resultKey = JSON.parse(bodyText).buildResultKey; } catch { /* ignore */ }
-    stats.triggered++;
-    planEntry.status = 'triggered';
-    planEntry.detail = resultKey ?? 'triggered (no buildResultKey in response)';
+    store.updatePlanTrigger(triggerId, 'triggered', resultKey ?? 'triggered (no buildResultKey in response)');
     console.log(`[bamboo] triggered plan=${planKey} repo=${meta.repo} ref=${meta.ref} buildResultKey=${resultKey ?? 'unknown'}`);
   } catch (err) {
-    stats.triggerFailed++;
-    planEntry.status = 'error';
-    planEntry.detail = err.message;
+    store.updatePlanTrigger(triggerId, 'error', err.message);
     console.error(`[bamboo] trigger ERROR plan=${planKey} repo=${meta.repo} ref=${meta.ref}: ${err.message}`);
   } finally {
     clearTimeout(timer);
-    saveState();
   }
 }
 
@@ -248,24 +194,20 @@ app.post('/webhook/github', (req, res) => {
   const event = req.get('x-github-event') || null;
 
   if (!verifySignature(req)) {
-    stats.rejectedSignature++;
-    recordEvent({ ts: new Date().toISOString(), delivery, event, repo: null, ref: null, outcome: 'rejected_signature', plans: [] });
+    store.recordDelivery({ ts: new Date().toISOString(), delivery, event, repo: null, ref: null, outcome: 'rejected_signature' });
     console.warn(`[webhook] rejected: invalid or missing X-Hub-Signature-256 (delivery=${delivery})`);
     return res.status(401).send('invalid signature');
   }
 
-  stats.received++;
-  stats.byEvent[event] = (stats.byEvent[event] || 0) + 1;
-
   if (event === 'ping') {
-    recordEvent({ ts: new Date().toISOString(), delivery, event, repo: req.body?.repository?.full_name ?? null, ref: null, outcome: 'ping', plans: [] });
+    store.recordDelivery({ ts: new Date().toISOString(), delivery, event, repo: req.body?.repository?.full_name ?? null, ref: null, outcome: 'ping' });
     console.log(`[webhook] ping received (delivery=${delivery})`);
     return res.status(200).send('pong');
   }
 
   if (event !== 'push') {
     // An org-wide webhook receives every event type it's subscribed to; only push builds anything.
-    recordEvent({ ts: new Date().toISOString(), delivery, event, repo: req.body?.repository?.full_name ?? null, ref: null, outcome: 'ignored_event', plans: [] });
+    store.recordDelivery({ ts: new Date().toISOString(), delivery, event, repo: req.body?.repository?.full_name ?? null, ref: null, outcome: 'ignored_event' });
     return res.status(200).send(`ignored event: ${event}`);
   }
 
@@ -276,21 +218,18 @@ app.post('/webhook/github', (req, res) => {
   const branch = branchFromRef(ref);
 
   if (!repoFullName) {
-    recordEvent({ ts: new Date().toISOString(), delivery, event, repo: null, ref, outcome: 'ignored_no_repo', plans: [] });
+    store.recordDelivery({ ts: new Date().toISOString(), delivery, event, repo: null, ref, outcome: 'ignored_no_repo' });
     console.warn(`[webhook] push payload missing repository.full_name (delivery=${delivery})`);
     return res.status(200).send('ignored: no repository in payload');
   }
 
-  stats.pushByRepo[repoFullName] = (stats.pushByRepo[repoFullName] || 0) + 1;
-
-  const entry = recordEvent({
+  const deliveryId = store.recordDelivery({
     ts: new Date().toISOString(),
     delivery,
     event,
     repo: repoFullName,
     ref: branch,
     outcome: deleted ? 'ignored_deleted' : 'received',
-    plans: [],
   });
 
   // Acknowledge immediately; the Bamboo call(s) happen asynchronously below so a slow or
@@ -304,38 +243,36 @@ app.post('/webhook/github', (req, res) => {
 
   const rules = repoPlanMap[repoFullName];
   if (!rules || rules.length === 0) {
-    entry.outcome = 'ignored_no_mapping';
+    store.updateDeliveryOutcome(deliveryId, 'ignored_no_mapping');
     console.log(`[webhook] no plan mapping for repo=${repoFullName} (delivery=${delivery}) - ignoring`);
     return;
   }
 
   const meta = { repo: repoFullName, ref: branch };
   const pending = [];
+  let planCount = 0;
 
   for (const rule of rules) {
     const planKey = typeof rule === 'string' ? rule : rule.planKey;
     const branches = typeof rule === 'string' ? null : rule.branches;
     if (!planKey) continue;
-    const planEntry = { planKey, status: 'pending', detail: null };
-    entry.plans.push(planEntry);
+    planCount++;
     if (branches && branches.length > 0 && !branches.includes(branch)) {
-      planEntry.status = 'skipped_branch';
-      planEntry.detail = `not in branch filter ${JSON.stringify(branches)}`;
+      const detail = `not in branch filter ${JSON.stringify(branches)}`;
+      store.addPlanTrigger(deliveryId, planKey, 'skipped_branch', detail);
       console.log(`[webhook] skip plan=${planKey} repo=${repoFullName} ref=${branch} (not in branch filter ${JSON.stringify(branches)})`);
       continue;
     }
-    pending.push(triggerBambooPlan(planKey, meta, planEntry));
+    const triggerId = store.addPlanTrigger(deliveryId, planKey);
+    pending.push(triggerBambooPlan(planKey, meta, triggerId));
   }
 
-  if (entry.plans.length === 0) {
-    entry.outcome = 'ignored_no_mapping';
-    saveState();
+  if (planCount === 0) {
+    store.updateDeliveryOutcome(deliveryId, 'ignored_no_mapping');
   } else {
-    entry.outcome = 'dispatched';
-    saveState();
+    store.updateDeliveryOutcome(deliveryId, 'dispatched');
     Promise.all(pending).then(() => {
-      entry.outcome = 'done';
-      saveState();
+      store.updateDeliveryOutcome(deliveryId, 'done');
     });
   }
 });
@@ -345,28 +282,23 @@ app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.get('/api/status', (_req, res) => {
   res.json({
     version: VERSION,
-    startedAt: stats.startedAt,
+    startedAt: STARTED_AT,
     uptimeSeconds: Math.round(process.uptime()),
     bambooBaseUrl: BAMBOO_BASE_URL,
     port: PORT,
     mapFile: MAP_FILE,
     repoPlanMap,
-    stats: {
-      received: stats.received,
-      byEvent: stats.byEvent,
-      pushByRepo: stats.pushByRepo,
-      rejectedSignature: stats.rejectedSignature,
-      triggered: stats.triggered,
-      triggerFailed: stats.triggerFailed,
-    },
-    // Newest first, capped - this is a debugging aid, not a full audit trail.
-    log: activityLog.slice().reverse(),
+    stats: store.getStats(),
+    // Newest first, capped - the full history lives in the SQLite db either way.
+    log: store.getRecentActivity(MAX_LOG_ENTRIES),
+    // Per-day breakdown for the last two weeks, oldest last-ish (newest first).
+    dailyStats: store.getDailyStats(14),
   });
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-export { app, branchFromRef, verifySignature, saveStateSync, STATE_FILE };
+export { app, branchFromRef, verifySignature, store, DB_FILE };
 
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
