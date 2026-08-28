@@ -16,7 +16,8 @@ This repository contains **bamboo-notifier**, a Node.js service that acts as a G
   - `config/repo-plan-map.json`: Runtime mapping from GitHub repo full names (`org/repo`) to Bamboo project/plan keys. (Gitignored; template provided at `config/repo-plan-map.example.json`).
   - `test/`: Node test runner test suites.
   - `build.sh` & `Dockerfile`: Container image build script.
-  - `test.sh`: Automated test runner script.
+  - `docker-entrypoint.sh`: Runs as root just long enough to `chown` the bind-mounted `/app/data` (SQLite db) before dropping to the unprivileged `node` user via `su-exec` and exec'ing the real `CMD`.
+  - `test.sh`: Automated test runner script (runs the suite inside `node:22-alpine` via `docker run` so it doesn't depend on the invoking host's own Node version).
 
 ---
 

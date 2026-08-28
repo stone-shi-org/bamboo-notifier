@@ -20,9 +20,10 @@ services:
       # without giving the container write access to it.
       - ./config/repo-plan-map.json:/app/config/repo-plan-map.json:ro
       # Persists the SQLite database (delivery/build history + stats) across container
-      # restarts and rebuilds - see README "History & stats database". Run `mkdir -p data`
-      # once before first `up` so the bind-mounted dir is writable by the container's
-      # non-root `node` user.
+      # restarts and rebuilds - see README "History & stats database". docker-entrypoint.sh
+      # chowns this to the non-root `node` user on startup, so no manual `mkdir`/`chown`
+      # is needed even on the very first `up` (when Docker would otherwise auto-create
+      # this dir owned by root).
       - ./data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

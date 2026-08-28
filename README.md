@@ -99,9 +99,11 @@ History is kept forever by default. Set `HISTORY_RETENTION_DAYS` to a positive n
 prune rows older than that once a day (e.g. `HISTORY_RETENTION_DAYS=180`).
 
 In Docker, `data/` is bind-mounted (see `docker-compose.yml`) so the database survives
-container rebuilds/restarts. **Run `mkdir -p data` once before the first `docker compose
-up`** — otherwise Docker creates that directory owned by `root`, which the container's
-non-root `node` user can't write to.
+container rebuilds/restarts. The container starts as `root` just long enough for
+`docker-entrypoint.sh` to `chown` `/app/data` (Docker auto-creates a not-yet-existing
+bind-mount source owned by `root`, which would otherwise be unwritable) before dropping
+to the unprivileged `node` user via `su-exec` to actually run the app — no manual `mkdir`/
+`chown` needed on the host.
 
 ## Run it
 
@@ -110,7 +112,6 @@ non-root `node` user can't write to.
 ```bash
 cp .env.example .env    # fill in WEBHOOK_SECRET and BAMBOO_TOKEN
 # edit config/repo-plan-map.json for your repos/plans
-mkdir -p data            # so the SQLite db is writable by the container's non-root user
 docker compose up -d --build
 docker compose logs -f
 ```
